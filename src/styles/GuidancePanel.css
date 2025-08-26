@@ -5,11 +5,12 @@
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
   padding: 1.5rem;
   height: 100%;
+  width: 100%;
   display: flex;
   flex-direction: column;
-  max-width: 350px;
-  min-width: 300px;
-  overflow-y: auto;
+  max-width: 850px;
+  min-width: 550px;
+
 }
 
 /* Tabs */
@@ -17,7 +18,8 @@
   display: flex;
   border-bottom: 1px solid #e0e0e0;
   margin-bottom: 1.5rem;
-  gap: 0.5rem;
+  gap: -3rem;
+
 }
 
 .tab {
@@ -216,9 +218,9 @@
 }
 
 /* Responsive design */
-@media (max-width: 1024px) {
+@media (max-width: 900px) {
   .guidance-panel {
-    max-width: 100%;
+    max-width: 150%;
     margin-top: 2rem;
     border-top: 1px solid #eee;
     border-radius: 0;
