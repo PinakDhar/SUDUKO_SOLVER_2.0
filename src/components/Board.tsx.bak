@@ -1,0 +1,741 @@
+// @ts-nocheck
+import React, { useState, useEffect, useCallback } from 'react';
+import '../styles/Board.css';
+import GuidancePanel from './GuidancePanel';
+
+type CellValue = number | null;
+type PencilMarks = number[];
+type BoardType = CellValue[][];
+
+const Board: React.FC = (): JSX.Element => {
+  const initialBoard: BoardType = Array(9).fill(null).map(() => Array(9).fill(null));
+  const [board, setBoard] = useState<BoardType>(initialBoard);
+  const [pencilMarks, setPencilMarks] = useState<PencilMarks[][]>(
+    Array(9).fill(null).map(() => Array(9).fill([]))
+  );
+  const [isPencilMode, setIsPencilMode] = useState(false);
+  const [initialBoardState, setInitialBoardState] = useState<boolean[][]>([]);
+  const [selectedCell, setSelectedCell] = useState<[number, number] | null>(null);
+  const [isSolving, setIsSolving] = useState(false);
+  const [conflictCells, setConflictCells] = useState<[number, number][]>([]);
+  const [solvingSpeed, setSolvingSpeed] = useState(50); // ms delay between steps
+  
+  // Undo/Redo functionality
+  const [history, setHistory] = useState<{
+    board: BoardType;
+    pencilMarks: PencilMarks[][];
+  }[]>([]);
+  const [historyIndex, setHistoryIndex] = useState(-1);
+  const [future, setFuture] = useState<{
+    board: BoardType;
+    pencilMarks: PencilMarks[][];
+  }[]>([]);
+
+  // Save current state to history before making changes
+  const saveToHistory = useCallback((newBoard: BoardType, newPencilMarks: PencilMarks[][]) => {
+    // Don't save if nothing has changed
+    if (JSON.stringify(newBoard) === JSON.stringify(board) && 
+        JSON.stringify(newPencilMarks) === JSON.stringify(pencilMarks)) {
+      return;
+    }
+    
+    setHistory(prev => {
+      const newHistory = prev.slice(0, historyIndex + 1);
+      newHistory.push({
+        board: JSON.parse(JSON.stringify(board)),
+        pencilMarks: JSON.parse(JSON.stringify(pencilMarks))
+      });
+      return newHistory.slice(-50); // Keep last 50 states
+    });
+    setHistoryIndex(prev => Math.min(prev + 1, 49));
+    setFuture([]); // Clear redo history when making new changes
+  }, [board, pencilMarks, historyIndex]);
+
+  const undo = useCallback(() => {
+    if (historyIndex < 0) return;
+    
+    const previousState = history[historyIndex];
+    setBoard(previousState.board);
+    setPencilMarks(previousState.pencilMarks);
+    
+    // Move current state to redo stack
+    setFuture(prev => [{
+      board: JSON.parse(JSON.stringify(board)),
+      pencilMarks: JSON.parse(JSON.stringify(pencilMarks))
+    }, ...prev].slice(0, 49));
+    
+    setHistoryIndex(prev => prev - 1);
+  }, [history, historyIndex, board, pencilMarks]);
+  
+  const redo = useCallback(() => {
+    if (future.length === 0) return;
+    
+    const nextState = future[0];
+    setBoard(nextState.board);
+    setPencilMarks(nextState.pencilMarks);
+    
+    // Move state back to history
+    setHistory(prev => {
+      const newHistory = [...prev, {
+        board: JSON.parse(JSON.stringify(board)),
+        pencilMarks: JSON.parse(JSON.stringify(pencilMarks))
+      }];
+      return newHistory.slice(-50);
+    });
+    
+    setFuture(prev => prev.slice(1));
+    setHistoryIndex(prev => Math.min(prev + 1, 49));
+  }, [future, board, pencilMarks]);
+
+  // Add keyboard event listeners
+  const handleKeyDown = useCallback((e: KeyboardEvent) => {
+    // Handle undo/redo
+    if (e.ctrlKey || e.metaKey) {
+      if (e.key === 'z' && !e.shiftKey) {
+        e.preventDefault();
+        undo();
+        return;
+      } else if ((e.key === 'y' || (e.key === 'z' && e.shiftKey)) && (e.ctrlKey || e.metaKey)) {
+        e.preventDefault();
+        redo();
+        return;
+      }
+    }
+    
+    // Toggle pencil mode with 'P' key
+    if (e.key.toLowerCase() === 'p') {
+      e.preventDefault();
+      setIsPencilMode(prev => !prev);
+      return;
+    }
+
+    // Handle number keys (1-9) and backspace/delete for clearing
+    if (selectedCell) {
+      const [row, col] = selectedCell;
+      
+      // Don't allow modifying initial puzzle cells
+      if (initialBoardState[row]?.[col]) return;
+
+      // Handle number input (1-9)
+      const num = parseInt(e.key);
+      if (!isNaN(num) && num >= 1 && num <= 9) {
+        if (isPencilMode) {
+          // Toggle pencil mark
+          const newPencilMarks = [...pencilMarks];
+          newPencilMarks[row] = [...newPencilMarks[row]];
+          const markIndex = newPencilMarks[row][col].indexOf(num);
+          
+          if (markIndex === -1) {
+            newPencilMarks[row][col] = [...newPencilMarks[row][col], num].sort((a, b) => a - b);
+          } else {
+            newPencilMarks[row][col] = newPencilMarks[row][col].filter(n => n !== num);
+            ];
+          }
+          setPencilMarks(newPencilMarks);
+        } else {
+          // Set cell value
+          const newBoard = [...board];
+          newBoard[row] = [...newBoard[row]];
+          newBoard[row][col] = num;
+          
+          // Clear pencil marks for this cell when setting a number
+          const newPencilMarks = [...pencilMarks];
+          newPencilMarks[row] = [...newPencilMarks[row]];
+          newPencilMarks[row][col] = [];
+          
+          setBoard(newBoard);
+          setPencilMarks(newPencilMarks);
+        }
+      }
+      // Handle backspace/delete for clearing cell
+      else if (e.key === 'Backspace' || e.key === 'Delete') {
+        handleClearCell();
+      }
+    }
+  }, [selectedCell, isPencilMode, pencilMarks, board, initialBoardState]);
+
+  // Initialize the board with a new puzzle and set up event listeners
+  useEffect(() => {
+    resetBoard();
+    
+    // Add keyboard event listener
+    window.addEventListener('keydown', handleKeyDown);
+    
+    // Clean up event listener
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [handleKeyDown]);
+
+  const resetBoard = () => {
+    const exampleBoard: BoardType = [
+      [5, 3, null, null, 7, null, null, null, null],
+      [6, null, null, 1, 9, 5, null, null, null],
+      [null, 9, 8, null, null, null, null, 6, null],
+      [8, null, null, null, 6, null, null, null, 3],
+      [4, null, null, 8, null, 3, null, null, 1],
+      [7, null, null, null, 2, null, null, null, 6],
+      [null, 6, null, null, null, null, 2, 8, null],
+      [null, null, null, 4, 1, 9, null, null, 5],
+      [null, null, null, null, 8, null, null, 7, 9]
+    ];
+    
+    setBoard(exampleBoard);
+    setPencilMarks(Array(9).fill(null).map(() => Array(9).fill([])));
+    
+    // Track which cells are part of the initial puzzle (non-editable)
+    const initialCells = exampleBoard.map(row => 
+      row.map(cell => cell !== null)
+    );
+    setInitialBoardState(initialCells);
+  };
+
+  const handleCellClick = (row: number, col: number) => {
+    // Only allow selecting empty cells or user-filled cells
+    if (initialBoardState[row]?.[col]) return;
+    setSelectedCell([row, col]);
+  };
+
+  const handleNumberClick = (num: number) => {
+    if (!selectedCell) return;
+    
+    const [row, col] = selectedCell;
+    
+    // Don't allow modifying initial puzzle cells
+    if (initialBoardState[row]?.[col]) return;
+    
+    // Save current state before making changes
+    saveToHistory(board, pencilMarks);
+    
+    if (isPencilMode) {
+      // Toggle pencil mark
+      const newPencilMarks = [...pencilMarks];
+      newPencilMarks[row] = [...newPencilMarks[row]];
+      
+      if (newPencilMarks[row][col].includes(num)) {
+        // Remove the pencil mark if it exists
+        newPencilMarks[row][col] = newPencilMarks[row][col].filter(n => n !== num);
+      } else {
+        // Add the pencil mark if it doesn't exist
+        newPencilMarks[row][col] = [...newPencilMarks[row][col], num].sort((a, b) => a - b);
+      }
+      
+      setPencilMarks(newPencilMarks);
+    } else {
+      // Regular number input
+      const newBoard = [...board];
+      // Clear pencil marks for this cell when entering a number
+      const newPencilMarks = [...pencilMarks];
+      newPencilMarks[row] = [...newPencilMarks[row]];
+      newPencilMarks[row][col] = [];
+      
+      // Toggle number - if the same number is clicked again, clear the cell
+      newBoard[row] = [...newBoard[row]];
+      newBoard[row][col] = newBoard[row][col] === num ? null : num;
+      
+      setBoard(newBoard);
+      setPencilMarks(newPencilMarks);
+    }
+  };
+
+  // Check if the current board is solved correctly
+  const checkSolution = (): { isValid: boolean; conflicts: [number, number][] } => {
+    const conflicts = new Set<string>();
+    
+    // Check rows
+    for (let row = 0; row < 9; row++) {
+      const seen = new Set<number>();
+      for (let col = 0; col < 9; col++) {
+        const value = board[row][col];
+        if (!value) continue;
+        if (seen.has(value)) {
+          // Mark all instances of this value in the row as conflicting
+          for (let c = 0; c < 9; c++) {
+            if (board[row][c] === value) {
+              conflicts.add(`${row},${c}`);
+            }
+          }
+        }
+        seen.add(value);
+      }
+    }
+    
+    // Check columns
+    for (let col = 0; col < 9; col++) {
+      const seen = new Set<number>();
+      for (let row = 0; row < 9; row++) {
+        const value = board[row][col];
+        if (!value) continue;
+        if (seen.has(value)) {
+          // Mark all instances of this value in the column as conflicting
+          for (let r = 0; r < 9; r++) {
+            if (board[r][col] === value) {
+              conflicts.add(`${r},${col}`);
+            }
+          }
+        }
+        seen.add(value);
+      }
+    }
+    
+    // Check 3x3 boxes
+    for (let boxRow = 0; boxRow < 3; boxRow++) {
+      for (let boxCol = 0; boxCol < 3; boxCol++) {
+        const seen = new Set<number>();
+        for (let row = boxRow * 3; row < boxRow * 3 + 3; row++) {
+          for (let col = boxCol * 3; col < boxCol * 3 + 3; col++) {
+            const value = board[row][col];
+            if (!value) continue;
+            if (seen.has(value)) {
+              // Mark all instances of this value in the box as conflicting
+              for (let r = boxRow * 3; r < boxRow * 3 + 3; r++) {
+                for (let c = boxCol * 3; c < boxCol * 3 + 3; c++) {
+                  if (board[r][c] === value) {
+                    conflicts.add(`${r},${c}`);
+                  }
+                }
+              }
+            }
+            seen.add(value);
+          }
+        }
+      }
+    }
+    
+    // Check for empty cells
+    for (let row = 0; row < 9; row++) {
+      for (let col = 0; col < 9; col++) {
+        if (!board[row][col]) {
+          conflicts.add(`${row},${col}`);
+        }
+      }
+    }
+    
+    // Convert string coordinates back to [number, number] tuples
+    const conflictCoords: [number, number][] = Array.from(conflicts).map(coord => {
+      const [r, c] = coord.split(',').map(Number);
+      return [r, c];
+    });
+    
+    return {
+      isValid: conflicts.size === 0,
+      conflicts: conflictCoords
+
+    }
+  };
+
+  const handleClearCell = () => {
+    if (selectedCell) {
+      const [row, col] = selectedCell;
+      if (initialBoardState[row]?.[col]) return; // Don't clear initial numbers
+      
+      // Save current state before making changes
+      saveToHistory(board, pencilMarks);
+
+      const newBoard = [...board];
+      newBoard[row] = [...newBoard[row]];
+      newBoard[row][col] = null;
+      setBoard(newBoard);
+
+      const newPencilMarks = [...pencilMarks];
+      newPencilMarks[row] = [...newPencilMarks[row]];
+      newPencilMarks[row][col] = [];
+      setPencilMarks(newPencilMarks);
+    }
+  };
+
+  const handleCheckSolution = () => {
+    const { isValid, conflicts } = checkSolution();
+
+    if (isValid) {
+      alert('Congratulations! The solution is correct!');
+      setConflictCells([]);
+    } else {
+      setConflictCells(conflicts);
+
+      // Reset after 2 seconds
+      setTimeout(() => {
+        setConflictCells([]);
+      }, 2000);
+    }
+  };
+
+  const isInSameBox = (row1: number, col1: number, row2: number, col2: number) => {
+    const boxRow1 = Math.floor(row1 / 3);
+    const boxCol1 = Math.floor(col1 / 3);
+    const boxRow2 = Math.floor(row2 / 3);
+    const boxCol2 = Math.floor(col2 / 3);
+    return boxRow1 === boxRow2 && boxCol1 === boxCol2;
+  };
+
+  const getCellClass = (row: number, col: number) => {
+    const classes = ['cell'];
+
+    if (initialBoardState[row]?.[col]) {
+      classes.push('initial-number');
+    }
+
+    if (selectedCell) {
+      const [selectedRow, selectedCol] = selectedCell;
+      if (row === selectedRow && col === selectedCol) {
+        classes.push('selected');
+      }
+      if (
+        row === selectedRow ||
+        col === selectedCol ||
+        isInSameBox(row, col, selectedRow, selectedCol)
+      ) {
+        classes.push('highlighted');
+      }
+    }
+
+    if (conflictCells.some(([r, c]) => r === row && c === col)) {
+      classes.push('conflict');
+    }
+
+    return classes.join(' ');
+  };
+
+  // Check if a number can be placed in a cell
+  const isValid = useCallback((board: BoardType, row: number, col: number, num: number): boolean => {
+    // Check row
+    for (let x = 0; x < 9; x++) {
+      if (board[row][x] === num) return false;
+    }
+
+    // Check column
+    for (let x = 0; x < 9; x++) {
+      if (board[x][col] === num) return false;
+    }
+
+    // Check 3x3 box
+    const boxStartRow = Math.floor(row / 3) * 3;
+    const boxStartCol = Math.floor(col / 3) * 3;
+    for (let i = 0; i < 3; i++) {
+      for (let j = 0; j < 3; j++) {
+        if (board[boxStartRow + i][boxStartCol + j] === num) return false;
+      }
+    }
+
+    return true;
+  }, []);
+
+  // Solve the Sudoku using backtracking with visualization
+  const solveSudoku = async (board: BoardType): Promise<boolean> => {
+    for (let row = 0; row < 9; row++) {
+      for (let col = 0; col < 9; col++) {
+        // Find empty cell
+        if (board[row][col] === null) {
+          // Try numbers 1-9
+          for (let num = 1; num <= 9; num++) {
+            if (isValid(board, row, col, num)) {
+              // Place the number
+              const newBoard = [...board];
+              newBoard[row] = [...newBoard[row]];
+              newBoard[row][col] = num;
+              
+              // Update the board with animation
+              setBoard([...newBoard]);
+              
+              // Add delay for visualization
+              await new Promise(resolve => setTimeout(resolve, solvingSpeed));
+              
+              // Recursively solve the rest
+              if (await solveSudoku(newBoard)) {
+                return true;
+              }
+              
+              // Backtrack
+              newBoard[row][col] = null;
+              setBoard([...newBoard]);
+              await new Promise(resolve => setTimeout(resolve, solvingSpeed));
+            }
+          }
+          return false; // No valid number found
+        }
+      }
+    }
+    return true; // Board is solved
+  };
+
+  // Generate a new random Sudoku puzzle
+  const generateNewPuzzle = () => {
+    // Create an empty board
+    const newBoard: BoardType = Array(9).fill(null).map(() => Array(9).fill(null));
+    
+    // Helper function to fill a 3x3 box
+    const fillBox = (row: number, col: number) => {
+      const nums = [1, 2, 3, 4, 5, 6, 7, 8, 9];
+      // Shuffle the numbers
+      for (let i = nums.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [nums[i], nums[j]] = [nums[j], nums[i]];
+      }
+      
+      // Fill the 3x3 box
+      let index = 0;
+      for (let i = 0; i < 3; i++) {
+        for (let j = 0; j < 3; j++) {
+          newBoard[row + i][col + j] = nums[index++];
+        }
+      }
+    };
+    
+    // Fill diagonal boxes (they are independent of each other)
+    fillBox(0, 0);
+    fillBox(3, 3);
+    fillBox(6, 6);
+    
+    // Solve the rest of the board
+    const solveBoard = (board: BoardType): boolean => {
+      for (let row = 0; row < 9; row++) {
+        for (let col = 0; col < 9; col++) {
+          if (board[row][col] === null) {
+            for (let num = 1; num <= 9; num++) {
+              if (isValid(board, row, col, num)) {
+                board[row][col] = num;
+                if (solveBoard(board)) {
+                  return true;
+                }
+                board[row][col] = null;
+              }
+            }
+            return false;
+          }
+        }
+      }
+      return true;
+    };
+    
+    // Solve the partially filled board
+    solveBoard(newBoard);
+    
+    // Remove numbers to create a puzzle with a unique solution
+    const removeNumbers = (board: BoardType, cellsToRemove: number) => {
+      let count = 0;
+      while (count < cellsToRemove) {
+        const row = Math.floor(Math.random() * 9);
+        const col = Math.floor(Math.random() * 9);
+        
+        if (board[row][col] !== null) {
+          const temp = board[row][col];
+          board[row][col] = null;
+          
+          // Check if the puzzle still has a unique solution
+          const tempBoard = JSON.parse(JSON.stringify(board));
+          if (countSolutions(tempBoard) === 1) {
+            count++;
+          } else {
+            board[row][col] = temp; // Put the number back
+          }
+        }
+      }
+    };
+    
+    // Count number of solutions for the puzzle
+    const countSolutions = (board: BoardType): number => {
+      let solutions = 0;
+      const boardCopy = JSON.parse(JSON.stringify(board));
+      
+      const solve = (board: BoardType): boolean => {
+        for (let row = 0; row < 9; row++) {
+          for (let col = 0; col < 9; col++) {
+            if (board[row][col] === null) {
+              for (let num = 1; num <= 9; num++) {
+                if (isValid(board, row, col, num)) {
+                  board[row][col] = num;
+                  if (solve(board)) {
+                    if (solutions > 1) return true;
+                  }
+                  board[row][col] = null;
+                }
+              }
+              return false;
+            }
+          }
+        }
+        solutions++;
+        return solutions > 1;
+      };
+      
+      solve(boardCopy);
+      return solutions;
+    };
+    
+    // Remove around 45-55 numbers to create a medium difficulty puzzle
+    const cellsToRemove = Math.floor(Math.random() * 11) + 45; // 45-55 cells removed
+    removeNumbers(newBoard, cellsToRemove);
+    
+    // Set the new board and initial state
+    setBoard(newBoard);
+    setPencilMarks(Array(9).fill(null).map(() => Array(9).fill([])));
+    setInitialBoardState(newBoard.map(row => row.map(cell => cell !== null)));
+    setConflictCells([]);
+    setSelectedCell(null);
+    setHistory([]);
+    setFuture([]);
+    setHistoryIndex(-1);
+  };
+  
+  // Handle speed change for solving animation
+  const handleSpeedChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    setSolvingSpeed(Number(e.target.value));
+  };
+
+  // Start solving the puzzle
+  const handleSolveClick = async () => {
+    if (isSolving) return;
+    
+    setIsSolving(true);
+    try {
+      const boardCopy = JSON.parse(JSON.stringify(board));
+      await solveSudoku(boardCopy);
+    } catch (error) {
+      console.error('Error solving Sudoku:', error);
+  // Render pencil marks for a cell
+  const renderPencilMarks = (row: number, col: number) => {
+    if (!pencilMarks[row]?.[col]?.length || board[row][col] !== null) return null;
+    
+    return (
+      <div className="pencil-marks">
+        {[1, 2, 3, 4, 5, 6, 7, 8, 9].map(num => (
+          <div 
+            key={num} 
+            className={`pencil-mark ${pencilMarks[row][col].includes(num) ? 'active' : ''}`}
+          >
+            {pencilMarks[row][col].includes(num) ? num : ''}
+          </div>
+        ))}
+      </div>
+    );
+  };
+
+  return (
+    <div className="game-content">
+      <h1>Sudoku Solver</h1>
+      <div className="sudoku-container">
+        <div className="game-board-container">
+          <div className="board">
+            {board.map((row, rowIndex) => (
+              <div key={rowIndex} className="row">
+                {row.map((cell, colIndex) => (
+                  <div
+                    key={`${rowIndex}-${colIndex}`}
+                    className={getCellClass(rowIndex, colIndex)}
+                    onClick={() => handleCellClick(rowIndex, colIndex)}
+                  >
+                    {cell || ''}
+                    {renderPencilMarks(rowIndex, colIndex)}
+                  </div>
+                ))}
+              </div>
+            ))}
+          </div>
+          
+          <div className="controls">
+            <div className="number-pad">
+              {[1, 2, 3, 4, 5, 6, 7, 8, 9].map(num => (
+                <button
+                  key={num}
+                  className="number-button"
+                  onClick={() => handleNumberClick(num)}
+                  disabled={isSolving}
+                >
+                  {num}
+                </button>
+              ))}
+              <button 
+                className="clear-button"
+                onClick={handleClearCell}
+                disabled={isSolving}
+              >
+                Clear
+              </button>
+            </div>
+            
+            <div className="toolbar">
+              <button 
+                className={`tool-button ${isPencilMode ? 'active' : ''}`}
+                onClick={() => setIsPencilMode(!isPencilMode)}
+                title="Toggle Pencil Mode (P)"
+              >
+                ✏️ Pencil
+              </button>
+              
+              <div className="undo-redo-buttons">
+                <button 
+                  className="tool-button"
+                  onClick={undo}
+                  disabled={historyIndex < 0}
+                  title="Undo (Ctrl+Z)"
+                >
+                  ↩️ Undo
+                </button>
+                <button 
+                  className="tool-button"
+                  onClick={redo}
+                  disabled={future.length === 0}
+                  title="Redo (Ctrl+Y or Ctrl+Shift+Z)"
+                >
+                  ↪️ Redo
+                </button>
+              </div>
+            </div>
+            
+            <div className="ai-controls">
+              <button 
+                className="check-button"
+                onClick={handleCheckSolution}
+                disabled={isSolving}
+                title="Check if your solution is correct"
+              >
+                Check Solution
+              </button>
+              
+              <button 
+                className="solve-button"
+                onClick={handleSolveClick}
+                disabled={isSolving}
+                title="Let the AI solve the puzzle"
+              >
+                {isSolving ? 'Solving...' : 'Solve with AI'}
+              </button>
+              
+              <button 
+                className="new-puzzle-button"
+                onClick={generateNewPuzzle}
+                disabled={isSolving}
+              >
+                New Puzzle
+              </button>
+              
+              <div className="speed-control">
+                <label>Speed:</label>
+                <input 
+                  type="range" 
+                  min="1" 
+                  max="1000" 
+                  value={solvingSpeed} 
+                  onChange={handleSpeedChange}
+                  disabled={isSolving}
+                />
+              </div>
+            </div>
+            
+            <div className="hint">
+              {isPencilMode 
+                ? "Pencil Mode: Click numbers to add/remove pencil marks"
+                : "Normal Mode: Click numbers to fill cells"}
+            </div>
+          </div>
+        </div>
+        
+        <div className="guidance-container">
+          <GuidancePanel />
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default Board;
